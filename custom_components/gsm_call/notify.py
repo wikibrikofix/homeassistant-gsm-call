@@ -6,32 +6,34 @@ from __future__ import annotations
 
 import re
 
-import homeassistant.helpers.config_validation as cv
 import serial
 import serial_asyncio_fast as serial_asyncio
-import voluptuous as vol
-from homeassistant.components.notify import \
-    PLATFORM_SCHEMA as NOTIFY_PLATFORM_SCHEMA
-from homeassistant.components.notify.const import ATTR_TARGET
-from homeassistant.components.notify.legacy import BaseNotificationService
-from homeassistant.const import CONF_DEVICE
+from homeassistant.components.notify import NotifyEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-
-from custom_components.gsm_call.sms.sms_sender import SmsSender
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .calls.at_dialer import ATDialer
 from .calls.at_tone_dialer import ATToneDialer
 from .calls.gtm382_dialer import GTM382Dialer
 from .calls.zte_dialer import ZTEDialer
-from .const import (_LOGGER, ATTR_PHONE_NUMBER, ATTR_REASON, CONF_AT_COMMAND,
-                    CONF_CALL_DURATION_SEC, CONF_DIAL_TIMEOUT_SEC,
-                    CONF_HARDWARE, CONF_TYPE, EVENT_GSM_CALL_ENDED,
-                    GSM_7BIT_ALPHABET)
+from .const import (
+    _LOGGER,
+    ATTR_PHONE_NUMBER,
+    ATTR_REASON,
+    CONF_CALL_DURATION_SEC,
+    CONF_DIAL_TIMEOUT_SEC,
+    DEFAULT_CALL_DURATION_SEC,
+    DEFAULT_DIAL_TIMEOUT_SEC,
+    DOMAIN,
+    EVENT_GSM_CALL_ENDED,
+    GSM_7BIT_ALPHABET,
+)
 from .modem import READ_LIMIT, Modem
+from .sms.sms_sender import SmsSender
 
-# Hardware support configuration
 SUPPORTED_DIALERS = {
     "atd": ATDialer,
     "atdt": ATToneDialer,
@@ -39,216 +41,158 @@ SUPPORTED_DIALERS = {
     "gtm382": GTM382Dialer,
 }
 
-# Platform schema
-PLATFORM_SCHEMA = NOTIFY_PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_DEVICE): cv.isdevice,
-        vol.Optional(CONF_HARDWARE, default="atd"): vol.In(SUPPORTED_DIALERS.keys()),
-        vol.Optional(CONF_DIAL_TIMEOUT_SEC, default=20): cv.positive_int,
-        vol.Optional(CONF_CALL_DURATION_SEC, default=30): cv.positive_int,
-        # CONF_AT_COMMAND is replaced by CONF_HARDWARE
-        vol.Optional(CONF_AT_COMMAND, default="ATD"): cv.matches_regex("^(ATD|ATDT)$"),
-    }
-)
+PHONE_NUMBER_RE = re.compile(r"^\+?[1-9]\d{1,14}$")
 
 
-def get_service(
-    _hass: HomeAssistant,
-    config: ConfigType,
-    _discovery_info: DiscoveryInfoType | None = None,
-) -> BaseNotificationService:
-    """Get the appropriate GSM notification service."""
-    if config.get(CONF_TYPE, "call") == "sms":
-        sender = SmsSender()
-        return GsmSmsNotificationService(config[CONF_DEVICE], sender)
-    else:  # call
-        dialer_name = config[CONF_HARDWARE]
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up GSM Call notify entities from a config entry."""
+    data = hass.data[DOMAIN][entry.entry_id]
+    device_path = data["device"]
+    notify_type = data["type"]
+    hardware = data["hardware"]
+    config = data["config"]
 
-        if config[CONF_HARDWARE] == "atd" and config[CONF_AT_COMMAND] == "ATDT":
-            dialer_name = "atdt"
+    if notify_type == "sms":
+        async_add_entities([GsmSmsNotifyEntity(entry, device_path)])
+    else:
+        dial_timeout = config.get(CONF_DIAL_TIMEOUT_SEC, DEFAULT_DIAL_TIMEOUT_SEC)
+        call_duration = config.get(CONF_CALL_DURATION_SEC, DEFAULT_CALL_DURATION_SEC)
+        dialer = SUPPORTED_DIALERS[hardware](
+            dial_timeout_sec=dial_timeout,
+            call_duration_sec=call_duration,
+        )
+        async_add_entities([GsmCallNotifyEntity(entry, device_path, dialer)])
 
-        dialer = SUPPORTED_DIALERS[dialer_name](
-            dial_timeout_sec=config[CONF_DIAL_TIMEOUT_SEC],
-            call_duration_sec=config[CONF_CALL_DURATION_SEC],
+
+def _validate_phone_number(phone_number: str) -> str:
+    """Validate and normalize phone number."""
+    if not PHONE_NUMBER_RE.match(phone_number):
+        raise ValueError("Invalid phone number")
+    return re.sub(r"\D", "", phone_number)
+
+
+async def _connect(device_path: str) -> Modem:
+    """Open serial connection and return a Modem instance."""
+    _LOGGER.debug("Connecting to %s...", device_path)
+    return Modem(
+        *await serial_asyncio.open_serial_connection(
+            url=device_path,
+            baudrate=75600,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            dsrdtr=True,
+            rtscts=True,
+            limit=READ_LIMIT,
+        )
+    )
+
+
+async def _disconnect(modem: Modem | None) -> None:
+    """Close serial connection."""
+    if modem is None:
+        return
+    _LOGGER.debug("Closing modem connection...")
+    modem.writer.close()
+    await modem.writer.wait_closed()
+
+
+class GsmCallNotifyEntity(NotifyEntity):
+    """Notify entity for GSM voice calls."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, entry: ConfigEntry, device_path: str, dialer) -> None:
+        self._entry = entry
+        self._device_path = device_path
+        self._dialer = dialer
+        self._modem: Modem | None = None
+        self._attr_unique_id = f"{entry.entry_id}_call"
+        self._attr_name = "GSM Call"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=f"GSM Modem ({device_path.split('/')[-1]})",
+            manufacturer="GSM Modem",
         )
 
-        return GsmCallNotificationService(config[CONF_DEVICE], dialer)
-
-
-class GsmBaseNotificationService(BaseNotificationService):
-    """Base class for GSM notification services."""
-
-    # Class-level modem instance
-    modem: Modem | None = None
-
-    def __init__(self, device_path: str):
-        """Initialize the base service."""
-        self.device_path = device_path
-        self.modem: Modem | None = None
-
-    async def connect(self) -> None:
-        """Connect to the modem."""
-        _LOGGER.debug(f"Connecting to {self.device_path}...")
-        self.modem = Modem(
-            *await serial_asyncio.open_serial_connection(
-                url=self.device_path,
-                baudrate=75600,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                dsrdtr=True,
-                rtscts=True,
-                limit=READ_LIMIT,
-            )
-        )
-
-    async def terminate(self) -> None:
-        """Terminate the modem connection."""
-        if self.modem is None:
-            return
-
-        _LOGGER.debug("Closing connection to the modem...")
-        self.modem.writer.close()
-        await self.modem.writer.wait_closed()
-        self.modem = None
-
-    def _validate_phone_number(self, phone_number: str) -> str:
-        """Validate and normalize phone number."""
-        phone_number_re = re.compile(r"^\+?[1-9]\d{1,14}$")
-        if not phone_number_re.match(phone_number):
-            raise ValueError("Invalid phone number")
-
-        return re.sub(r"\D", "", phone_number)
-
-
-class GsmCallNotificationService(GsmBaseNotificationService):
-    """Service for making GSM voice calls."""
-
-    def __init__(self, device_path: str, dialer):
-        """Initialize the call service."""
-        super().__init__(device_path)
-        self.dialer = dialer
-
-    async def async_send_message(self, _message="", **kwargs):
-        """Make a voice call to the specified targets."""
-        if not (targets := kwargs.get(ATTR_TARGET)):
-            _LOGGER.info("At least 1 target is required")
-            return
-
-        # Check if already making a call
-        if GsmBaseNotificationService.modem:
-            _LOGGER.info("Already making a voice call")
-            return
+    async def async_send_message(self, message: str, title: str | None = None) -> None:
+        """Make a voice call. Message is expected to contain the phone number."""
+        target = message.strip()
+        if not target:
+            raise HomeAssistantError("Phone number is required in the message field")
 
         try:
-            await self.connect()
+            phone_number = _validate_phone_number(target)
+        except ValueError as e:
+            raise HomeAssistantError(f"Invalid phone number {target}: {e}") from e
 
-            for target in targets:
-                try:
-                    phone_number = self._validate_phone_number(target)
-                except ValueError as e:
-                    _LOGGER.error(f"Invalid phone number {target}: {e}")
-                    continue
+        if self._modem:
+            raise HomeAssistantError("Already making a voice call")
 
-                call_state = await self.dialer.dial(GsmBaseNotificationService.modem, phone_number)
-                self.hass.bus.async_fire(
-                    EVENT_GSM_CALL_ENDED,
-                    {ATTR_PHONE_NUMBER: phone_number, ATTR_REASON: call_state},
-                )
-        finally:
-            await self.terminate()
-
-    async def connect(self):
-        """Connect to the modem for calls."""
-        _LOGGER.debug(f"Connecting to {self.device_path} for voice call...")
-        GsmBaseNotificationService.modem = Modem(
-            *await serial_asyncio.open_serial_connection(
-                url=self.device_path,
-                baudrate=75600,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                dsrdtr=True,
-                rtscts=True,
-                limit=READ_LIMIT,
+        try:
+            self._modem = await _connect(self._device_path)
+            call_state = await self._dialer.dial(self._modem, phone_number)
+            self.hass.bus.async_fire(
+                EVENT_GSM_CALL_ENDED,
+                {ATTR_PHONE_NUMBER: phone_number, ATTR_REASON: call_state},
             )
+        finally:
+            await _disconnect(self._modem)
+            self._modem = None
+
+
+class GsmSmsNotifyEntity(NotifyEntity):
+    """Notify entity for GSM SMS messages."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, entry: ConfigEntry, device_path: str) -> None:
+        self._entry = entry
+        self._device_path = device_path
+        self._sender = SmsSender()
+        self._modem: Modem | None = None
+        self._attr_unique_id = f"{entry.entry_id}_sms"
+        self._attr_name = "GSM SMS"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=f"GSM Modem ({device_path.split('/')[-1]})",
+            manufacturer="GSM Modem",
         )
 
-    async def terminate(self):
-        """Terminate the modem connection for calls."""
-        if GsmBaseNotificationService.modem is None:
-            return
-
-        _LOGGER.debug("Closing connection to the modem after voice call...")
-        GsmBaseNotificationService.modem.writer.close()
-        await GsmBaseNotificationService.modem.writer.wait_closed()
-        GsmBaseNotificationService.modem = None
-
-
-class GsmSmsNotificationService(GsmBaseNotificationService):
-    """Service for sending GSM SMS messages."""
-
-    def __init__(self, device_path: str, sender):
-        """Initialize the SMS service."""
-        super().__init__(device_path)
-        self.sender = sender
-
-    async def async_send_message(self, message="", **kwargs):
-        """Send an SMS message to the specified targets."""
-        if not (targets := kwargs.get(ATTR_TARGET)):
-            _LOGGER.info("At least 1 target is required")
-            return
-
+    async def async_send_message(self, message: str, title: str | None = None) -> None:
+        """Send an SMS. The message format is: 'phone_number|text'."""
         if not message:
-            _LOGGER.error("SMS requires a non-empty message")
-            return
+            raise HomeAssistantError("Message is required")
 
-        # Validate message for GSM 7-bit alphabet
-        if not re.match(GSM_7BIT_ALPHABET, message):
-            _LOGGER.error("SMS message contains invalid characters")
+        # Expect format: "+1234567890|SMS text here"
+        if "|" not in message:
+            raise HomeAssistantError("Message format: '+phone_number|text'")
+
+        target, sms_text = message.split("|", 1)
+        target = target.strip()
+        sms_text = sms_text.strip()
+
+        if not sms_text:
+            raise HomeAssistantError("SMS text is required")
+
+        if not re.match(GSM_7BIT_ALPHABET, sms_text):
             raise HomeAssistantError("Only basic Latin letters, digits, and common symbols are supported")
 
-        # Check if already connected for SMS
-        if GsmSmsNotificationService.modem:
-            _LOGGER.info("Already connected to the modem for SMS")
-            return
+        try:
+            phone_number = _validate_phone_number(target)
+        except ValueError as e:
+            raise HomeAssistantError(f"Invalid phone number {target}: {e}") from e
+
+        if self._modem:
+            raise HomeAssistantError("Already connected to the modem for SMS")
 
         try:
-            await self.connect()
-
-            for target in targets:
-                try:
-                    phone_number = self._validate_phone_number(target)
-                except ValueError as e:
-                    _LOGGER.error(f"Invalid phone number {target}: {e}")
-                    continue
-
-                await self.sender.send(GsmSmsNotificationService.modem, phone_number, message)
+            self._modem = await _connect(self._device_path)
+            await self._sender.send(self._modem, phone_number, sms_text)
         finally:
-            await self.terminate()
-
-    async def connect(self):
-        """Connect to the modem for SMS."""
-        _LOGGER.debug(f"Connecting to {self.device_path} for SMS...")
-        GsmSmsNotificationService.modem = Modem(
-            *await serial_asyncio.open_serial_connection(
-                url=self.device_path,
-                baudrate=75600,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                dsrdtr=True,
-                rtscts=True,
-                limit=READ_LIMIT,
-            )
-        )
-
-    async def terminate(self):
-        """Terminate the modem connection for SMS."""
-        if GsmSmsNotificationService.modem is None:
-            return
-
-        _LOGGER.debug("Closing connection to the modem after SMS...")
-        GsmSmsNotificationService.modem.writer.close()
-        await GsmSmsNotificationService.modem.writer.wait_closed()
-        GsmSmsNotificationService.modem = None
+            await _disconnect(self._modem)
+            self._modem = None

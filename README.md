@@ -1,3 +1,23 @@
+⚠️ **DISCLAIMER** ⚠️
+
+This repository is a fork of [black-roland/homeassistant-gsm-call](https://github.com/black-roland/homeassistant-gsm-call).
+
+The following changes have been applied to modernize the integration:
+
+- Added **Config Flow** (`config_flow.py`) for UI-based configuration (replaces `configuration.yaml` setup)
+- Added **`strings.json`** for config flow translations
+- Migrated from legacy **`BaseNotificationService`** to the modern **`NotifyEntity`** entity platform
+- Implemented **`async_setup_entry`** / **`async_unload_entry`** in `__init__.py` with state management via `hass.data`
+- Added **`DeviceInfo`** to notify entities for proper device registry integration
+- Added **`integration_type`** and **`config_flow`** to `manifest.json`
+- Fixed `_LOGGER.warn()` → `_LOGGER.warning()` (Python deprecation)
+- Fixed absolute import → relative import
+- Removed dead code (`CONF_AT_COMMAND`, `SUPPORTED_HARDWARE`, unused imports)
+
+**This fork is available exclusively for testing purposes. No warranty of any kind is provided, either express or implied. Use at your own risk.**
+
+---
+
 Описание на русском [доступно тут](./README.ru.md).
 <br>
 <br>

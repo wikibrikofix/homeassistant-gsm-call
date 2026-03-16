@@ -42,5 +42,5 @@ class Modem:
                     if any(decoded == m or decoded.startswith(m) for m in end_markers):
                         return lines
         except TimeoutError:
-            _LOGGER.warn(f"Timeout occurred while reading response, returning {len(lines)} line(s) collected so far")
+            _LOGGER.warning(f"Timeout occurred while reading response, returning {len(lines)} line(s) collected so far")
             return lines

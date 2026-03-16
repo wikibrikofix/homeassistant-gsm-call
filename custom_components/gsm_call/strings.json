@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "GSM Modem Configuration",
+        "data": {
+          "device": "Serial device path",
+          "type": "Notification type",
+          "hardware": "Hardware type",
+          "dial_timeout_sec": "Dial timeout (seconds)",
+          "call_duration_sec": "Call duration (seconds)"
+        },
+        "description": "Configure your GSM modem for voice calls or SMS."
+      }
+    },
+    "error": {
+      "no_device": "No device path specified."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  }
+}

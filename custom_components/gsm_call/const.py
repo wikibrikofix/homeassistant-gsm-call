@@ -10,10 +10,13 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "gsm_call"
 
 CONF_TYPE = "type"
-CONF_AT_COMMAND = "at_command"
 CONF_DIAL_TIMEOUT_SEC = "dial_timeout_sec"
 CONF_CALL_DURATION_SEC = "call_duration_sec"
 CONF_HARDWARE = "hardware"
+
+DEFAULT_HARDWARE = "atd"
+DEFAULT_DIAL_TIMEOUT_SEC = 20
+DEFAULT_CALL_DURATION_SEC = 30
 
 EVENT_GSM_CALL_ENDED = f"{DOMAIN}_ended"
 ATTR_PHONE_NUMBER = "phone_number"
