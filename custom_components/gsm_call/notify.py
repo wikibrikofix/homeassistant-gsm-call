@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_DIAL_TIMEOUT_SEC,
     DOMAIN,
     EVENT_GSM_CALL_ENDED,
+    EndedReason,
     GSM_7BIT_ALPHABET,
 )
 from .modem import READ_LIMIT, Modem
@@ -120,26 +121,41 @@ class GsmCallNotifyEntity(NotifyEntity):
         )
 
     async def async_send_message(self, message: str, title: str | None = None) -> None:
-        """Make a voice call. Message is expected to contain the phone number."""
-        target = message.strip()
-        if not target:
+        """Make voice calls. Supports multiple numbers separated by |.
+
+        Calls each number in sequence and stops when someone answers or
+        declines. If nobody answers, cycles through all numbers once.
+        """
+        if not message or not message.strip():
             raise HomeAssistantError("Phone number is required in the message field")
 
-        try:
-            phone_number = _validate_phone_number(target)
-        except ValueError as e:
-            raise HomeAssistantError(f"Invalid phone number {target}: {e}") from e
+        targets = [t.strip() for t in message.split("|") if t.strip()]
+        if not targets:
+            raise HomeAssistantError("Phone number is required in the message field")
+
+        numbers = []
+        for t in targets:
+            try:
+                numbers.append(_validate_phone_number(t))
+            except ValueError as e:
+                raise HomeAssistantError(f"Invalid phone number {t}: {e}") from e
 
         if self._modem:
             raise HomeAssistantError("Already making a voice call")
 
         try:
             self._modem = await _connect(self._device_path)
-            call_state = await self._dialer.dial(self._modem, phone_number)
-            self.hass.bus.async_fire(
-                EVENT_GSM_CALL_ENDED,
-                {ATTR_PHONE_NUMBER: phone_number, ATTR_REASON: call_state},
-            )
+            for phone_number in numbers:
+                _LOGGER.info("Calling +%s (%d/%d)...", phone_number, numbers.index(phone_number) + 1, len(numbers))
+                call_state = await self._dialer.dial(self._modem, phone_number)
+                self.hass.bus.async_fire(
+                    EVENT_GSM_CALL_ENDED,
+                    {ATTR_PHONE_NUMBER: phone_number, ATTR_REASON: call_state},
+                )
+                if call_state in (EndedReason.ANSWERED, EndedReason.DECLINED):
+                    _LOGGER.info("Call to +%s ended with %s, stopping", phone_number, call_state)
+                    break
+                _LOGGER.info("No answer from +%s, trying next number", phone_number)
         finally:
             await _disconnect(self._modem)
             self._modem = None
