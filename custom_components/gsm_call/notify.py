@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 
+import asyncio
+
 import serial
 import serial_asyncio_fast as serial_asyncio
 from homeassistant.components.notify import NotifyEntity
@@ -145,8 +147,8 @@ class GsmCallNotifyEntity(NotifyEntity):
 
         try:
             self._modem = await _connect(self._device_path)
-            for phone_number in numbers:
-                _LOGGER.info("Calling +%s (%d/%d)...", phone_number, numbers.index(phone_number) + 1, len(numbers))
+            for idx, phone_number in enumerate(numbers):
+                _LOGGER.info("Calling +%s (%d/%d)...", phone_number, idx + 1, len(numbers))
                 call_state = await self._dialer.dial(self._modem, phone_number)
                 self.hass.bus.async_fire(
                     EVENT_GSM_CALL_ENDED,
@@ -156,6 +158,8 @@ class GsmCallNotifyEntity(NotifyEntity):
                     _LOGGER.info("Call to +%s ended with %s, stopping", phone_number, call_state)
                     break
                 _LOGGER.info("No answer from +%s, trying next number", phone_number)
+                # Wait for modem to be ready for next call
+                await asyncio.sleep(3)
         finally:
             await _disconnect(self._modem)
             self._modem = None
