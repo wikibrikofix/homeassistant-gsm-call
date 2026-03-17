@@ -37,7 +37,8 @@ class ATDialer:
             ended_reason = await self._wait_for_call_end(modem)
 
             _LOGGER.debug("Hanging up...")
-            modem.send_command("AT+CHUP")
+            await modem.execute_at("AT+CHUP", timeout=5, end_markers=["OK", "ERROR", "NO CARRIER", "+CME ERROR"])
+            await asyncio.sleep(2)
             _LOGGER.info(f"Call ended: {ended_reason}")
 
             return ended_reason
