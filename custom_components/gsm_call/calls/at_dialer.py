@@ -81,13 +81,16 @@ class ATDialer:
                     return EndedReason.ANSWERED
 
                 elif "ERROR" in reply:
-                    # +CME ERROR during call = network ended the call
                     _LOGGER.debug("Modem returned error during poll, treating as not answered")
                     return EndedReason.NOT_ANSWERED
 
-                elif is_ringing and "+CLCC:" not in reply:
-                    # Only OK, no +CLCC line = callee actively declined
-                    return EndedReason.DECLINED
+                elif "+CLCC:" not in reply:
+                    if is_ringing:
+                        # Was ringing, call ended = not answered (timeout/network drop)
+                        return EndedReason.NOT_ANSWERED
+                    else:
+                        # Never started ringing = actively declined
+                        return EndedReason.DECLINED
 
                 await asyncio.sleep(1)
                 lines = await modem.execute_at(
