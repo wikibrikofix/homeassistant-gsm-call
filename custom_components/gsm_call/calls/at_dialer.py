@@ -80,7 +80,13 @@ class ATDialer:
                 elif "+CLCC: 1,0,0" in reply:
                     return EndedReason.ANSWERED
 
-                elif is_ringing and "+CLCC: 1,0" not in reply:
+                elif "ERROR" in reply:
+                    # +CME ERROR during call = network ended the call
+                    _LOGGER.debug("Modem returned error during poll, treating as not answered")
+                    return EndedReason.NOT_ANSWERED
+
+                elif is_ringing and "+CLCC:" not in reply:
+                    # Only OK, no +CLCC line = callee actively declined
                     return EndedReason.DECLINED
 
                 await asyncio.sleep(1)
