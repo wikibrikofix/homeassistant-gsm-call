@@ -154,10 +154,10 @@ class GsmCallNotifyEntity(NotifyEntity):
                     EVENT_GSM_CALL_ENDED,
                     {ATTR_PHONE_NUMBER: phone_number, ATTR_REASON: call_state},
                 )
-                if call_state in (EndedReason.ANSWERED, EndedReason.DECLINED):
-                    _LOGGER.info("Call to +%s ended with %s, stopping", phone_number, call_state)
+                if call_state == EndedReason.ANSWERED:
+                    _LOGGER.info("Call to +%s was answered, stopping", phone_number)
                     break
-                _LOGGER.info("No answer from +%s, trying next number", phone_number)
+                _LOGGER.info("No answer from +%s (%s), trying next number", phone_number, call_state)
                 # Wait for modem to be ready for next call
                 await asyncio.sleep(3)
         finally:
