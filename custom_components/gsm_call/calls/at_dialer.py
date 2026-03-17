@@ -34,10 +34,7 @@ class ATDialer:
             if "ERROR" in reply or "NO CARRIER" in reply:
                 raise HomeAssistantError(f"Modem replied with an error: {reply}")
 
-            try:
-                ended_reason = await self._wait_for_answer(modem)
-            except asyncio.TimeoutError:
-                ended_reason = EndedReason.NOT_ANSWERED
+            ended_reason = await self._wait_for_call_end(modem)
 
             _LOGGER.debug("Hanging up...")
             modem.send_command("AT+CHUP")
@@ -47,36 +44,65 @@ class ATDialer:
         except asyncio.TimeoutError:
             raise HomeAssistantError(f"Timeout while dialing +{phone_number}")
 
-    async def _wait_for_answer(self, modem: Modem):
-        _LOGGER.debug(f"Waiting up to {self._dial_sec} seconds for answer...")
+    async def _wait_for_call_end(self, modem: Modem) -> EndedReason:
+        """Wait for the call to end by listening for modem unsolicited responses.
 
+        First tries AT+CLCC polling. If the modem doesn't support it,
+        falls back to passive listening for NO CARRIER / BUSY.
+        """
+        # Try AT+CLCC once to see if modem supports it
+        lines = await modem.execute_at(
+            "AT+CLCC", timeout=2, end_markers=["OK", "ERROR", "+CME ERROR"]
+        )
+        reply = " ".join(lines)
+        _LOGGER.debug(f"CLCC probe: {reply}")
+
+        if "+CLCC:" in reply or "OK" in reply and len(lines) > 1:
+            # Modem supports CLCC, use polling
+            return await self._poll_clcc(modem, reply)
+
+        # Modem doesn't support CLCC, use passive wait
+        _LOGGER.info(f"AT+CLCC not supported, waiting passively for {self._call_sec}s...")
+        return await self._passive_wait(modem)
+
+    async def _poll_clcc(self, modem: Modem, initial_reply: str) -> EndedReason:
+        """Poll AT+CLCC for call state changes."""
         is_ringing = False
+        reply = initial_reply
+
         async with asyncio.timeout(self._dial_sec) as timeout:
             while True:
-                # Provisioning:     +CLCC: 1,0,2…
-                # Phone is ringing: +CLCC: 1,0,3…
-                # Answered:         +CLCC: 1,0,0…
-                # Declined:         Nothing, OK only
-                lines = await modem.execute_at(
-                    "AT+CLCC",
-                    timeout=2,
-                    end_markers=["OK", "ERROR", "+CME ERROR"]
-                )
-                reply = " ".join(lines)
-                _LOGGER.debug(f"Modem replied with {reply}")
-
                 if not is_ringing and "+CLCC: 1,0,3" in reply:
                     is_ringing = True
-                    _LOGGER.info(f"Callee's phone started ringing, waiting for {self._call_sec} seconds...")
-                    new_deadline = asyncio.get_running_loop().time() + self._call_sec
-                    timeout.reschedule(new_deadline)
-                    continue
+                    _LOGGER.info(f"Phone ringing, waiting {self._call_sec}s...")
+                    timeout.reschedule(asyncio.get_running_loop().time() + self._call_sec)
 
-                if "+CLCC: 1,0,0" in reply:
+                elif "+CLCC: 1,0,0" in reply:
                     return EndedReason.ANSWERED
 
-                if "+CLCC: 1,0" not in reply:
+                elif is_ringing and "+CLCC: 1,0" not in reply:
                     return EndedReason.DECLINED
 
-                # Intervals lower than 1 sec are causing "+CME ERROR: 100" on some modems
                 await asyncio.sleep(1)
+                lines = await modem.execute_at(
+                    "AT+CLCC", timeout=2, end_markers=["OK", "ERROR", "+CME ERROR"]
+                )
+                reply = " ".join(lines)
+                _LOGGER.debug(f"CLCC poll: {reply}")
+
+    async def _passive_wait(self, modem: Modem) -> EndedReason:
+        """Wait passively for call_duration_sec, listening for modem URCs."""
+        try:
+            async with asyncio.timeout(self._call_sec):
+                while True:
+                    line = await modem.reader.readline()
+                    decoded = line.decode(errors="ignore").strip()
+                    if not decoded:
+                        continue
+                    _LOGGER.debug(f"Modem URC: {decoded}")
+                    if "NO CARRIER" in decoded:
+                        return EndedReason.DECLINED
+                    if "BUSY" in decoded:
+                        return EndedReason.DECLINED
+        except TimeoutError:
+            return EndedReason.NOT_ANSWERED
