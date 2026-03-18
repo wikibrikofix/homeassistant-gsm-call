@@ -2,19 +2,34 @@
 
 This repository is a fork of [black-roland/homeassistant-gsm-call](https://github.com/black-roland/homeassistant-gsm-call).
 
-The following changes have been applied to modernize the integration:
-
-- Added **Config Flow** (`config_flow.py`) for UI-based configuration (replaces `configuration.yaml` setup)
-- Added **`strings.json`** for config flow translations
-- Migrated from legacy **`BaseNotificationService`** to the modern **`NotifyEntity`** entity platform
-- Implemented **`async_setup_entry`** / **`async_unload_entry`** in `__init__.py` with state management via `hass.data`
-- Added **`DeviceInfo`** to notify entities for proper device registry integration
-- Added **`integration_type`** and **`config_flow`** to `manifest.json`
-- Fixed `_LOGGER.warn()` → `_LOGGER.warning()` (Python deprecation)
-- Fixed absolute import → relative import
-- Removed dead code (`CONF_AT_COMMAND`, `SUPPORTED_HARDWARE`, unused imports)
-
 **This fork is available exclusively for testing purposes. No warranty of any kind is provided, either express or implied. Use at your own risk.**
+
+### What's new in this fork
+
+#### Modernized to current Home Assistant standards
+- Migrated from legacy `BaseNotificationService` to the modern **`NotifyEntity`** entity platform
+- Implemented `async_setup_entry` / `async_unload_entry` with proper lifecycle management via `hass.data`
+- Added `DeviceInfo` for proper device registry integration
+- Added `integration_type` and `config_flow` to `manifest.json`
+- Removed deprecated code and unused imports
+
+#### New UI configuration wizard
+- Full **Config Flow** support: configure the integration entirely from the Home Assistant UI (Settings → Integrations → Add → GSM Call)
+- No more manual `configuration.yaml` editing required
+- Serial device path, notification type (call/SMS), hardware type, dial timeout and call duration are all configurable from the wizard
+- Same modem can be configured for both voice calls and SMS as separate entries
+
+#### Sequential multi-number dialing (alarm mode)
+- Send multiple phone numbers separated by `|` (e.g. `+39num1|+39num2|+39num3`)
+- Calls each number in sequence; only stops when someone **answers**
+- If a number doesn't answer, is unreachable, or busy → automatically calls the next one
+- Designed to work with **Alarmo** and other alarm panels, mimicking the behavior of physical alarm dialers
+
+#### Huawei E169 (E161/E620/E800) compatibility fixes
+- Fixed `AT+CLCC` polling: the dialer now probes CLCC support and falls back to passive URC listening if the modem doesn't respond
+- Fixed call state detection: `^CEND` and `+CME ERROR` during ringing are correctly treated as "not answered" instead of "declined"
+- Fixed `AT+CHUP` hangup: the modem response is now consumed before initiating the next call, preventing stale buffer data from corrupting subsequent commands
+- Added recovery delay between sequential calls for modem stability
 
 ---
 
